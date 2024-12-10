@@ -1,0 +1,8 @@
+browser position chr1:52372329-52404923
+track name=Hypermethylation description="Hypermethylated CpG Sites" color=0,0,255, 
+#chrom chromStart chromEnd
+track name=Hypomethylation description="Hypomethylated CpG Sites" color=255,0,0, 
+#chrom chromStart chromEnd
+track name=Neutral description="Neutral CpG Sites" color=128,128,128, 
+#chrom chromStart chromEnd
+chr1   52400961 52400982

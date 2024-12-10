@@ -1,0 +1,396 @@
+---
+title: "R Final Project"
+authors: Anmol, Nick, Xander
+output: html_notebook
+---
+
+# R Setup (Configure outputs path below)
+
+```{r setup}
+dir.create("ABSOLUTE/PATH/TO/outputs")
+knitr::opts_knit$set(root.dir = normalizePath("ABSOLUTE/PATH/TO/outputs"))
+```
+
+# Load in Packages
+
+```{r}
+library(BiocManager) 
+library(TCGAbiolinks)
+library(maftools)
+library(TCGAbiolinks)
+library(ggplot2)
+library(survival)
+library(survminer)
+library(DESeq2)
+library(EnhancedVolcano)
+library(sesame)
+library(sesameData)
+library(limma)
+```
+
+# Load in Clinical Data
+
+```{r}
+clin_query <- GDCquery(project = "TCGA-PRAD", data.category = "Clinical",
+data.type = "Clinical Supplement", data.format = 'BCR Biotab')
+
+GDCdownload(clin_query)
+
+clinical.BCRtab.all <- GDCprepare(clin_query)
+clinical <- clinical.BCRtab.all$clinical_patient_prad[-c(1,2),]
+
+names(clinical)[2] <- 'Tumor_Sample_Barcode'
+```
+
+# Load in MAF Data
+
+```{r}
+maf_query <- GDCquery(
+  project = 'TCGA-PRAD',
+  data.category = "Simple Nucleotide Variation",
+  access = "open", # we only have access to somatic mutations which are open access
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+GDCdownload(maf_query)
+
+maf <- GDCprepare(maf_query)
+
+maf_object <- read.maf(maf = maf,
+                       clinicalData = clinical, 
+                       isTCGA = TRUE)
+```
+
+# CoOncoplot
+
+```{r}
+# Categorize tumor size by pathologic_T column
+tumor_onset_isna <- ifelse(maf_object@clinical.data$pathologic_T == '[Discrepancy]' | maf_object@clinical.data$pathologic_T == '[Not Available]', F, T)
+clean_maf_object <- maf_object@clinical.data[tumor_onset_isna,]
+
+clean_maf_object$tumor_onset <- ifelse(clean_maf_object$pathologic_T == 'T2a' | clean_maf_object$pathologic_T == 'T2b' | clean_maf_object$pathologic_T == 'T2c', "Small", "Large")
+
+# Subset mafs by tumor size
+small_mask <- ifelse(clean_maf_object$tumor_onset == 'Small', T, F)
+small_barcodes <- clean_maf_object$Tumor_Sample_Barcode[small_mask]
+small_maf <- subsetMaf(maf = maf_object, tsb = small_barcodes)
+
+large_mask <- ifelse(clean_maf_object$tumor_onset == 'Large', T, F)
+large_barcodes <- clean_maf_object$Tumor_Sample_Barcode[large_mask]
+large_maf <- subsetMaf(maf = maf_object, tsb = large_barcodes)
+
+# Generate CoOncoplot
+genes <- c("USP43","SHANK3","PPP1R1B","ORC1","INPP5B","MYBL2","EXO1","DYNLL1","CENPF","B4GALT1")
+
+jpeg(file = paste("cooncoplot", ".jpeg", sep=""))
+coOncoplot(m1 = small_maf, 
+           m2 = large_maf, 
+           genes = genes,
+           m1Name = "Small Tumor", 
+           m2Name = "Large Tumor",
+           borderCol = NA)
+dev.off()
+```
+
+# Load in RNA Data
+
+```{r}
+rna_query <- GDCquery(project ="TCGA-PRAD",
+                      data.category = "Transcriptome Profiling",
+                      data.type = "Gene Expression Quantification",
+                      workflow.type = "STAR - Counts")
+GDCdownload(rna_query)
+rna_se <- GDCprepare(rna_query)
+
+# Extract and process relevant dataframes
+rna_clinical <- as.data.frame(rna_se@colData)
+column_mask <- ifelse(colnames(rna_clinical) %in% c('treatments','primary_site','disease_type'), F, T)
+rna_clinical <- rna_clinical[,column_mask]
+
+rna_genes <- rna_se@rowRanges@elementMetadata
+rna_genes <- as.data.frame(rna_genes)
+
+rna_counts <- rna_se@assays@data$tpm_unstrand
+colnames(rna_counts) <- rna_clinical$patient
+rownames(rna_counts) <- rna_genes$gene_id
+```
+
+# RNA Box Plots
+
+```{r}
+# Categorize tumor size by pathologic_T column and subset rna_clinical by tumor size
+rna_isna <- ifelse(!is.na(rna_clinical$ajcc_pathologic_t), T, F)
+
+clean_rna_clinical <- rna_clinical[rna_isna,]
+
+clean_rna_clinical$tumor_onset <- ifelse(clean_rna_clinical$ajcc_pathologic_t == 'T2a' | clean_rna_clinical$ajcc_pathologic_t == 'T2b' | clean_rna_clinical$ajcc_pathologic_t == 'T2c', "Small", "Large")
+
+rna_clinical_small <- clean_rna_clinical$tumor_onset == "Small"
+rna_clinical_large <- clean_rna_clinical$tumor_onset == "Large"
+
+# Generate boxplots comparing RNA regulation by tumor siize
+gene_list <- c("USP43","SHANK3","PPP1R1B","ORC1","INPP5B","MYBL2","EXO1","DYNLL1","CENPF","B4GALT1")
+rna_p_values <- data.frame(matrix(ncol = 0, nrow = 0))
+
+for (gene in gene_list){
+
+gene_counts_mask <- rna_genes$gene_name == gene
+
+rna_small <- as.numeric(rna_counts[gene_counts_mask, rna_clinical_small])
+rna_large <- as.numeric(rna_counts[gene_counts_mask, rna_clinical_large])
+
+jpeg(file = paste("boxplot_", gene, ".jpeg", sep=""))
+boxplot(rna_small, rna_large, xlab='Tumor Size', ylab='TPM', log="y", names=c('T2', 'T3/T4'), main = print(paste0(gene, " Expression")), col=c('lightblue','pink'))
+dev.off()
+
+# P value calculation
+wilcox <- wilcox.test(rna_small, rna_large)
+rna_p_values[gene,1] <- wilcox$p.value
+}
+
+# Generate p value files
+colnames(rna_p_values) <- "P Values"
+write.csv(rna_p_values, 'rna_p_values.csv')
+read.csv('rna_p_values.csv')
+```
+
+# Contigency Tables
+
+```{r}
+gene_list <- c("USP43","SHANK3","PPP1R1B","ORC1","INPP5B","MYBL2","EXO1","DYNLL1","CENPF","B4GALT1")
+rna_contig_p_values <- data.frame(matrix(ncol = 0, nrow = 0))
+
+for (gene in gene_list){
+  
+temp_rna_clinical <- rna_clinical
+temp_rna_genes <- rna_genes
+gene_counts_mask <- temp_rna_genes$gene_name == gene
+gene_list_up <- c()
+gene_list_down <- c()
+
+# Get Q1/Q3 thresholds for gene regulation
+gene_1stq <- as.numeric(quantile(as.matrix(rna_counts[gene_counts_mask,]), probs=0.25))
+gene_3rdq <- as.numeric(quantile(as.matrix(rna_counts[gene_counts_mask,]), probs=0.75))
+
+# Create a list of top/bottom quartiles of upregulated/downregulated patients
+for (i in 1:ncol(rna_counts)){
+  gene_list_up[i] <- ifelse(as.numeric(rna_counts[gene_counts_mask, i]) > gene_3rdq, i, NA)
+  gene_list_down[i] <- ifelse(as.numeric(rna_counts[gene_counts_mask, i]) < gene_1stq, i, NA)
+}
+
+gene_list_up <- gene_list_up[!is.na(gene_list_up)]
+gene_list_down <- gene_list_down[!is.na(gene_list_down)]
+
+# Create a new column within rna_clinical based on gene regulation 
+temp_rna_clinical[gene_list_up, "RNA"] <- "Upregulated"
+temp_rna_clinical[gene_list_down, "RNA"] <- "Downregulated"
+
+na_mask <- !is.na(temp_rna_clinical$RNA)
+temp_rna_clinical <- temp_rna_clinical[na_mask,]
+
+# Categorize tumor size by pathologic_T column and subset temp_rna_clinical by tumor size
+rna_isna <- ifelse(!is.na(temp_rna_clinical$ajcc_pathologic_t), T, F)
+clean_rna_clinical <- temp_rna_clinical[rna_isna,]
+clean_rna_clinical$tumor_onset <- ifelse(clean_rna_clinical$ajcc_pathologic_t == 'T2a' | clean_rna_clinical$ajcc_pathologic_t == 'T2b' | clean_rna_clinical$ajcc_pathologic_t == 'T2c', "T2", "T3/4")
+
+# Generate contingency tables
+clean_rna_clinical$RNA <- factor(clean_rna_clinical$RNA)
+clean_rna_clinical$tumor_onset <- factor(clean_rna_clinical$tumor_onset)
+
+jpeg(file = paste("contig_", gene, ".jpeg", sep=""))
+contig <- table(clean_rna_clinical$RNA, clean_rna_clinical$tumor_onset)
+print(contig)
+mosaicplot(contig, main = print(paste0(gene, " Expression vs. Tumor Size")), color=c('lightblue','pink'))
+dev.off()
+
+# P value calculation
+fisher_test <- fisher.test(contig)
+rna_contig_p_values[gene,1] <- fisher_test$p.value
+}
+
+# Generate p value files
+colnames(rna_contig_p_values) <- "P Values"
+write.csv(rna_contig_p_values, 'rna_contig_p_values.csv')
+read.csv('rna_contig_p_values.csv')
+```
+
+# Load in Methylation Data
+
+```{r}
+query <- GDCquery(project = "TCGA-PRAD",
+                  data.category = "DNA Methylation",
+                  data.type = "Methylation Beta Value",
+                  platform = "Illumina Human Methylation 450",
+                  data.format = "Dataframe")
+GDCdownload(query)
+methylation450 <- GDCprepare(query)
+
+# Extract and process relevant dataframes
+methylation_clinical <- as.data.frame(methylation450@colData)
+betas <- as.data.frame(methylation450@assays@data@listData)
+cpg_sites <- as.data.frame(methylation450@rowRanges@elementMetadata)
+
+column_mask <- ifelse(colnames(methylation_clinical) %in% c('treatments', 'primary_site', 'disease_type'), F, T)
+methylation_clinical <- methylation_clinical[,column_mask]
+
+site_mask <- !grepl('-', cpg_sites$gene) & !grepl(';', cpg_sites$gene) & !is.na(cpg_sites$gene) & complete.cases(betas)
+betas <- betas[site_mask,]
+cpg_sites <- cpg_sites[site_mask,]
+```
+
+# Epigenomic Plots
+
+```{r}
+# Categorize tumor size by pathologic_T column and subset methylation_clinical by tumor size
+methylation_isna <- !is.na(methylation_clinical$ajcc_pathologic_t)
+
+clean_methylation_clinical <- methylation_clinical[methylation_isna,]
+
+clean_methylation_clinical[,"tumor_onset"] <- ifelse(clean_methylation_clinical$ajcc_pathologic_t == 'T2a' | clean_methylation_clinical$ajcc_pathologic_t == 'T2b' | clean_methylation_clinical$ajcc_pathologic_t == 'T2c', "Small", "Large")
+
+methylation_clinical_small <- clean_methylation_clinical$tumor_onset == "Small"
+methylation_clinical_large <- clean_methylation_clinical$tumor_onset == "Large"
+
+# Generate bar graph comparing CpG methylation by tumor size
+gene_list <- c("USP43","SHANK3","PPP1R1B","ORC1","INPP5B","MYBL2","EXO1","DYNLL1","CENPF","B4GALT1")
+epi_p_values <- data.frame(matrix(ncol = 0, nrow = 0))
+epi_sig_p_values <- data.frame(matrix(ncol = 0, nrow = 0))
+gene_count <- 1
+
+for (gene in gene_list){
+
+gene_betas_mask <- cpg_sites$gene == gene
+
+methylation_small <- (betas[gene_betas_mask, methylation_clinical_small])
+methylation_large <- (betas[gene_betas_mask, methylation_clinical_large])
+
+jpeg(file = paste("methylation_", gene, ".jpeg", sep=""))
+plot(1:dim(methylation_small)[1], apply(methylation_small, 1, mean), col='blue', type='h', lwd=3, ylab='Average Beta', xlab='CpG sites', main = print(paste0(gene, " Methylation")))
+lines(1.3:(dim(methylation_small)[1]+0.3), apply(methylation_large, 1, mean), col='red', type='h', lwd=3)
+dev.off()
+
+# P value calculation and subsetting significant p values
+count <- 1
+for (i in rownames(methylation_small)){
+  wilcox <- wilcox.test(as.numeric(methylation_small[i,]), as.numeric(methylation_large[i,]), alternative = "greater")
+  epi_p_values[paste0("CpG ", count), gene_count] <- wilcox$p.value
+  if(wilcox$p.value <= 0.05){
+    epi_sig_p_values[paste0(gene, " CpG Site ", count),1] <- wilcox$p.value
+  }
+count <- count + 1
+}
+gene_count <- gene_count + 1
+}
+
+# Generate p value files
+epi_p_values[is.na(epi_p_values)] <- ""
+colnames(epi_p_values) <- gene_list
+colnames(epi_sig_p_values) <- "P Values"
+write.csv(epi_p_values, 'epi_p_values.csv')
+write.csv(epi_sig_p_values, 'epi_sig_p_values.csv')
+read.csv('epi_p_values.csv')
+read.csv('epi_sig_p_values.csv')
+```
+
+# Volcano Plot (Only generated for UCSC Genome Browser below)
+
+```{r}
+# Categorize tumor size by pathologic_T column and subset methylation_clinical by tumor size
+not_na <- !is.na(methylation_clinical$ajcc_pathologic_t)
+
+clean_betas <- betas[,not_na]
+clean_methylation_clinical <- methylation_clinical[not_na,]
+
+clean_methylation_clinical[,"tumor_onset"] <- ifelse(clean_methylation_clinical$ajcc_pathologic_t == 'T2a' | clean_methylation_clinical$ajcc_pathologic_t == 'T2b' | clean_methylation_clinical$ajcc_pathologic_t == 'T2c', "Small", "Large")
+
+clean_methylation_clinical$large <- clean_methylation_clinical$tumor_onset == "Large"
+
+# Generate volcano plot
+mval <- t(apply(clean_betas, 1, function(x) log2(x/(1-x))))
+
+design <- model.matrix(~ large, data = clean_methylation_clinical)
+fit <- lmFit(mval, design)
+fit2 <- eBayes(fit)
+
+dat <- data.frame(foldchange = fit[["coefficients"]][,2], logPvalue =  -log10(p.adjust(fit2[["p.value"]][,2],method='BY')), geneName = cpg_sites$gene)
+dat$threshold <- as.factor(abs(dat$foldchange) < 1)
+
+jpeg(file = paste("volcano.jpeg", sep=""))
+cols <- c("TRUE" = "grey", "FALSE" = "blue")
+ggplot(data=dat, aes(x=foldchange, y = logPvalue, color=threshold)) +
+  geom_point(alpha=.2, size=0.6) +
+  scale_colour_manual(values = cols) +
+  geom_vline(xintercept = 1, colour="#990000", linetype="dashed") + 
+  geom_vline(xintercept = - 1, colour="#990000", linetype="dashed") +
+  geom_hline(yintercept = 2, colour = "#990000", linetype="dashed") +
+  theme(legend.position="none") +
+  xlab("Fold Change") +
+  ylab("-log10 p value") +
+  theme_bw() +
+  theme(legend.position = "none")
+dev.off()
+```
+
+# UCSC Genome Browser (Configure outputs path below)
+
+```{r}
+library(glue)
+
+create_methylation_track <- function(gene, dat, methylation450, rna_se, output_dir, sig_threshold=2, fc_cutoff=0.5, output="track.txt", box_offset=10){
+  rna_genes_detailed <- data.frame(rna_se@rowRanges)
+  cpg_sites_detailed <- data.frame(methylation450@rowRanges)
+  row.names(cpg_sites_detailed) <- methylation450@rowRanges@ranges@NAMES
+  
+  gene_mask <- rna_genes_detailed$gene_name == gene
+  if(sum(gene_mask) == 0){
+    print('Gene not found...has it been mispelled or has rna_genes been filtered?')
+  }
+  gene.chr <- rna_genes_detailed[gene_mask, 'seqnames']
+  gene.start <- rna_genes_detailed[gene_mask, 'start']
+  gene.end <- rna_genes_detailed[gene_mask, 'end']
+  
+  cpg_mask <- cpg_sites_detailed$gene == gene
+  cpg_mask[is.na(cpg_mask)] <- FALSE
+  cpg.data <- cpg_sites_detailed[cpg_mask, ]
+  
+  cpg.data$logPvalue <- dat[row.names(cpg.data), 'logPvalue']
+  cpg.data$foldchange <- dat[row.names(cpg.data), 'foldchange']
+  cpg.data<-cpg.data[!is.na(cpg.data$logPvalue),]
+  cpg.data<-cpg.data[!is.na(cpg.data$foldchange),]
+    
+  hypermethylated <- cpg.data[cpg.data$logPvalue >= sig_threshold & cpg.data$foldchange >= fc_cutoff,]
+  hypomethylated <- cpg.data[cpg.data$logPvalue >= sig_threshold & cpg.data$foldchange <= -1*fc_cutoff,]
+  neutral <- cpg.data[cpg.data$logPvalue < sig_threshold | (cpg.data$foldchange < fc_cutoff & cpg.data$foldchange > -1*fc_cutoff),]
+  
+  text <- c()
+  
+  text<-append(text, glue("browser position {gene.chr}:{gene.start-500}-{gene.end+500}\n"))
+  text<-append(text, 'track name=Hypermethylation description="Hypermethylated CpG Sites" color=0,0,255, \n#chrom chromStart chromEnd')
+  if(dim(hypermethylated)[1] > 0){
+    for(site in 1:dim(hypermethylated)[1]){
+      text<-append(text, glue('{hypermethylated[site,"chrm_A"]}   {hypermethylated[site, "start"]-box_offset} {hypermethylated[site, "end"]+box_offset}\n'))
+    }
+  }
+  text<-append(text, 'track name=Hypomethylation description="Hypomethylated CpG Sites" color=255,0,0, \n#chrom chromStart chromEnd')
+  if(dim(hypomethylated)[1] > 0){
+    for(site in 1:dim(hypomethylated)[1]){
+      text<-append(text, glue('{hypomethylated[site,"chrm_A"]}   {hypomethylated[site, "start"]-box_offset} {hypomethylated[site, "end"]+box_offset}\n'))
+    }
+  }
+  text<-append(text, 'track name=Neutral description="Neutral CpG Sites" color=128,128,128, \n#chrom chromStart chromEnd')
+  if(dim(neutral)[1] > 0){
+    for(site in 1:dim(neutral)[1]){
+      text<-append(text, glue('{neutral[site,"chrm_A"]}   {neutral[site, "start"]-box_offset} {neutral[site, "end"]+box_offset}\n'))
+    }
+  }
+  
+  writeLines(text, glue('{output_dir}{gene}_{output}'))
+}
+
+gene_list <- c("ORC1","MYBL2","EXO1","DYNLL1","CENPF")
+
+for (gene in gene_list){
+  create_methylation_track(gene, dat, methylation450, rna_se, output_dir="ABSOLUTE/PATH/TO/outputs")
+}
+```

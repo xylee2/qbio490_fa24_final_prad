@@ -1,0 +1,24 @@
+browser position chr1:214602695-214665071
+track name=Hypermethylation description="Hypermethylated CpG Sites" color=0,0,255, 
+#chrom chromStart chromEnd
+track name=Hypomethylation description="Hypomethylated CpG Sites" color=255,0,0, 
+#chrom chromStart chromEnd
+track name=Neutral description="Neutral CpG Sites" color=128,128,128, 
+#chrom chromStart chromEnd
+chr1   214602933 214602954
+chr1   214602951 214602972
+chr1   214602960 214602981
+chr1   214602973 214602994
+chr1   214603083 214603104
+chr1   214603100 214603121
+chr1   214603116 214603137
+chr1   214603122 214603143
+chr1   214603124 214603145
+chr1   214603260 214603281
+chr1   214603411 214603432
+chr1   214603437 214603458
+chr1   214603551 214603572
+chr1   214604243 214604264
+chr1   214612170 214612191
+chr1   214640359 214640380
+chr1   214661007 214661028
